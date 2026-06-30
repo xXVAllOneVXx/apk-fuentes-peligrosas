@@ -7,6 +7,7 @@ export interface GlobalAlert {
   type: 'earthquake' | 'tsunami' | 'news' | 'disaster' | 'terror';
   severity: 'low' | 'medium' | 'high' | 'critical';
   details: string;
+  coordinates?: { lat: number; lng: number };
 }
 
 export class GlobalAlertsService {
@@ -112,13 +113,23 @@ export class GlobalAlertsService {
         type = 'news';
       }
 
+      // Try to parse coordinates if available in GDACS (often in geo:Point or similar)
+      let coords: { lat: number, lng: number } | undefined = undefined;
+      if (item['geo:Point'] && item['geo:Point']['geo:lat'] && item['geo:Point']['geo:long']) {
+         coords = {
+           lat: parseFloat(item['geo:Point']['geo:lat']),
+           lng: parseFloat(item['geo:Point']['geo:long'])
+         };
+      }
+
       alerts.push({
         id: `gdacs-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         title: title,
         timestamp: new Date(item.pubDate || Date.now()).getTime(),
         type: type,
         severity: severity,
-        details: desc.replace(/(<([^>]+)>)/gi, "").substring(0, 150) + '...' // Strip HTML from RSS descriptions
+        details: desc.replace(/(<([^>]+)>)/gi, "").substring(0, 150) + '...', // Strip HTML from RSS descriptions
+        coordinates: coords
       });
     }
 
@@ -145,13 +156,24 @@ export class GlobalAlertsService {
         severity = 'critical'; // Elevate severity if tsunami warning
       }
 
+      const geometry = feature.geometry;
+      let coords: { lat: number, lng: number } | undefined = undefined;
+      // GeoJSON points are [longitude, latitude]
+      if (geometry && geometry.type === 'Point' && geometry.coordinates.length >= 2) {
+        coords = {
+          lat: geometry.coordinates[1],
+          lng: geometry.coordinates[0]
+        };
+      }
+
       return {
         id: feature.id,
         title: feature.properties.title,
         timestamp: feature.properties.time,
         type: type,
         severity: severity,
-        details: `Magnitud: ${mag}. Localización: ${feature.properties.place}.`
+        details: `Magnitud: ${mag}. Localización: ${feature.properties.place}.`,
+        coordinates: coords
       };
     });
   }

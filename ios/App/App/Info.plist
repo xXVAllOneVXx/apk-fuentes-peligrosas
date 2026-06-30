@@ -49,5 +49,7 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Necesitamos acceder al micrófono para monitorear ruidos fuertes, como disparos o explosiones, para el sistema de alerta temprana.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Requerimos tu ubicación para determinar qué tan lejos estás de los sismos y desastres globales reportados y alertarte solo si estás en la zona de impacto.</string>
 </dict>
 </plist>

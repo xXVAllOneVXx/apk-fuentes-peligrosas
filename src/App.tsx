@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { Motion } from '@capacitor/motion';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { App as CapacitorApp } from '@capacitor/app';
+import { Geolocation } from '@capacitor/geolocation';
+import type { Position } from '@capacitor/geolocation';
 import { AudioAnalyzer } from './AudioAnalyzer';
 import { GlobalAlertsService } from './GlobalAlertsService';
 import { MeshNetworkService } from './MeshNetworkService';
@@ -17,6 +19,9 @@ function App() {
   const [audioAlert, setAudioAlert] = useState(false);
   const [meshAlert, setMeshAlert] = useState<string | null>(null);
   const [globalAlerts, setGlobalAlerts] = useState<GlobalAlert[]>([]);
+  const [userLocation, setUserLocation] = useState<Position | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
 
   const audioAnalyzerRef = useRef<AudioAnalyzer | null>(null);
   const meshServiceRef = useRef<MeshNetworkService>(MeshNetworkService.getInstance());
@@ -26,6 +31,57 @@ function App() {
 
   // Throttle para notificaciones locales (evitar spam)
   const lastNotificationTime = useRef(0);
+
+  // Calculate distance between two coordinates in kilometers using Haversine formula
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371; // Radius of the earth in km
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const d = R * c;
+    return d;
+  };
+
+  const checkGlobalAlertsProximity = (alerts: GlobalAlert[], currentLocation: Position) => {
+    const RADIUS_KM = 500; // Radius to consider an event "dangerous" to the user
+
+    alerts.forEach(alert => {
+      // Only process severe alerts that happened recently (e.g. last 1 hour)
+      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+      if (alert.timestamp < oneHourAgo) return;
+
+      if ((alert.severity === 'high' || alert.severity === 'critical') && alert.coordinates) {
+        const distance = calculateDistance(
+          currentLocation.coords.latitude,
+          currentLocation.coords.longitude,
+          alert.coordinates.lat,
+          alert.coordinates.lng
+        );
+
+        if (distance <= RADIUS_KM) {
+           triggerNativeNotification(
+             `¡PELIGRO CERCANO: ${alert.title}!`,
+             `Se ha detectado un evento extremo a ${Math.round(distance)}km de tu ubicación. Toma precauciones inmediatamente.`
+           );
+        }
+      }
+    });
+  };
+
+  const fetchAndProcessAlerts = async (loc: Position | null) => {
+    if (!navigator.onLine) return;
+
+    const alerts = await GlobalAlertsService.fetchLatestAlerts();
+    setGlobalAlerts(alerts);
+
+    if (loc) {
+      checkGlobalAlertsProximity(alerts, loc);
+    }
+  };
 
   const triggerNativeNotification = async (title: string, body: string) => {
     const now = Date.now();
@@ -63,17 +119,42 @@ function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Fetch initial alerts
-    if (navigator.onLine) {
-      GlobalAlertsService.fetchLatestAlerts().then(setGlobalAlerts);
-    }
+    let initialLocation: Position | null = null;
+
+    const initGeo = async () => {
+      try {
+        const permStatus = await Geolocation.checkPermissions();
+        if (permStatus.location !== 'granted') {
+          await Geolocation.requestPermissions();
+        }
+
+        initialLocation = await Geolocation.getCurrentPosition();
+        setUserLocation(initialLocation);
+
+        // Empezar a monitorear posición (opcional, para esta PoC tomamos la inicial)
+      } catch (e) {
+        console.error("No se pudo obtener la ubicación:", e);
+      }
+
+      fetchAndProcessAlerts(initialLocation);
+    };
+
+    initGeo();
 
     // Polling global alerts every 60 seconds if online
     const alertInterval = setInterval(() => {
-      if (navigator.onLine) {
-        GlobalAlertsService.fetchLatestAlerts().then(setGlobalAlerts);
-      }
+      // Use latest known location for proximity checks
+      fetchAndProcessAlerts(userLocation || initialLocation);
     }, 60000);
+
+    // PWA Install Prompt handling
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
     // Background handling
     const appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
@@ -88,6 +169,7 @@ function App() {
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       clearInterval(alertInterval);
       Motion.removeAllListeners();
       if (currentAudioAnalyzer) {
@@ -96,7 +178,18 @@ function App() {
       currentMeshService.disconnect();
       appStateListener.then(listener => listener.remove());
     };
-  }, [sensorsActive]);
+  }, [sensorsActive, userLocation]);
+
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      const { outcome } = await deferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setIsInstallable(false);
+      }
+      setDeferredPrompt(null);
+    }
+  };
 
   const toggleSensors = async () => {
     if (sensorsActive) {
@@ -181,6 +274,16 @@ function App() {
         <h1>AlertApp</h1>
         <p>Sistema de Alerta Temprana Descentralizado</p>
       </header>
+
+      {isInstallable && (
+        <button
+          className="action-button"
+          onClick={handleInstallClick}
+          style={{ backgroundColor: '#34c759', marginBottom: '20px' }}
+        >
+          ⬇️ Instalar AlertApp
+        </button>
+      )}
 
       <div className="status-card" style={{ backgroundColor: hasAlert ? '#4a1111' : '#1e1e1e' }}>
         <h2>Estado Global</h2>
