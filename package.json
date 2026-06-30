@@ -13,7 +13,10 @@
     "@capacitor/android": "^8.4.1",
     "@capacitor/core": "^8.4.1",
     "@capacitor/ios": "^8.4.1",
+    "@capacitor/local-notifications": "^8.2.0",
     "@capacitor/motion": "^8.0.0",
+    "@tensorflow-models/speech-commands": "^0.5.4",
+    "@tensorflow/tfjs": "^4.22.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },

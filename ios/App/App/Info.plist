@@ -47,5 +47,7 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Necesitamos acceder al micrófono para monitorear ruidos fuertes, como disparos o explosiones, para el sistema de alerta temprana.</string>
 </dict>
 </plist>

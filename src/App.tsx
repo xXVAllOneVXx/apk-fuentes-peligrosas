@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { Motion } from '@capacitor/motion';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import { AudioAnalyzer } from './AudioAnalyzer';
+import { GlobalAlertsService } from './GlobalAlertsService';
+import type { GlobalAlert } from './GlobalAlertsService';
 import './App.css';
 
 function App() {
@@ -10,11 +13,44 @@ function App() {
   const [motionData, setMotionData] = useState({ x: 0, y: 0, z: 0 });
   const [earthquakeAlert, setEarthquakeAlert] = useState(false);
   const [audioAlert, setAudioAlert] = useState(false);
+  const [globalAlerts, setGlobalAlerts] = useState<GlobalAlert[]>([]);
 
   const audioAnalyzerRef = useRef<AudioAnalyzer | null>(null);
 
   // Umbral de aceleración para detectar sismo
   const THRESHOLD = 12.0;
+
+  // Throttle para notificaciones locales (evitar spam)
+  const lastNotificationTime = useRef(0);
+
+  const triggerNativeNotification = async (title: string, body: string) => {
+    const now = Date.now();
+    // Prevenir más de 1 notificación nativa cada 10 segundos
+    if (now - lastNotificationTime.current < 10000) return;
+
+    try {
+      const permStatus = await LocalNotifications.requestPermissions();
+      if (permStatus.display === 'granted') {
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              title,
+              body,
+              id: now,
+              schedule: { at: new Date(now + 100) }, // Mostrar casi inmediatamente
+              sound: undefined,
+              attachments: undefined,
+              actionTypeId: "",
+              extra: null
+            }
+          ]
+        });
+        lastNotificationTime.current = now;
+      }
+    } catch (e) {
+      console.error("No se pudieron enviar notificaciones locales:", e);
+    }
+  };
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -23,9 +59,22 @@ function App() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
+    // Fetch initial alerts
+    if (navigator.onLine) {
+      GlobalAlertsService.fetchLatestAlerts().then(setGlobalAlerts);
+    }
+
+    // Polling global alerts every 60 seconds if online
+    const alertInterval = setInterval(() => {
+      if (navigator.onLine) {
+        GlobalAlertsService.fetchLatestAlerts().then(setGlobalAlerts);
+      }
+    }, 60000);
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      clearInterval(alertInterval);
       Motion.removeAllListeners();
       if (audioAnalyzerRef.current) {
         audioAnalyzerRef.current.stopListening();
@@ -60,15 +109,23 @@ function App() {
           // Si la aceleración supera el umbral en cualquier eje, disparamos alerta
           if (Math.abs(x) > THRESHOLD || Math.abs(y) > THRESHOLD || Math.abs(z) > THRESHOLD) {
             setEarthquakeAlert(true);
+            triggerNativeNotification(
+              "¡ALERTA DE SISMO!",
+              "Se ha detectado un movimiento fuerte localmente."
+            );
             setTimeout(() => setEarthquakeAlert(false), 3000); // Resetear alerta después de 3s
           }
         });
 
-        // Iniciar Micrófono
-        const analyzer = new AudioAnalyzer((volume) => {
-          console.log("Ruido extremo detectado, RMS:", volume);
+        // Iniciar Micrófono con TensorFlow.js
+        const analyzer = new AudioAnalyzer((keyword, probability) => {
+          console.log("IA detectó palabra clave:", keyword, "Probabilidad:", probability);
           setAudioAlert(true);
-          setTimeout(() => setAudioAlert(false), 3000);
+          triggerNativeNotification(
+            "¡PELIGRO DETECTADO!",
+            `La Inteligencia Artificial ha detectado la palabra clave de auxilio/peligro: "${keyword}".`
+          );
+          setTimeout(() => setAudioAlert(false), 5000); // 5s alert para dar tiempo de leer
         });
 
         const audioStarted = await analyzer.startListening();
@@ -133,19 +190,45 @@ function App() {
           <span className="label">Red Local (Mesh)</span>
           <span className="value">Desconectado</span>
         </div>
-        <div className="sensor-item">
-          <span className="label">Notificaciones</span>
-          <span className="value">Pendiente</span>
-        </div>
       </div>
 
       <button
         className="action-button"
         onClick={toggleSensors}
-        style={{ backgroundColor: sensorsActive ? '#ff3b30' : '#0a84ff' }}
+        style={{ backgroundColor: sensorsActive ? '#ff3b30' : '#0a84ff', marginBottom: '20px' }}
       >
         {sensorsActive ? 'Detener Sensores' : 'Activar Sensores (Modo Vigilia)'}
       </button>
+
+      <h3 style={{ width: '100%', textAlign: 'left', marginBottom: '10px' }}>Feed de Alertas Globales</h3>
+      <div className="alerts-feed" style={{ width: '100%', maxHeight: '250px', overflowY: 'auto' }}>
+        {globalAlerts.length === 0 ? (
+          <p style={{ color: '#aaaaaa', textAlign: 'center', fontSize: '0.9rem' }}>
+            {isOnline ? 'Cargando alertas...' : 'Sin conexión para ver alertas globales.'}
+          </p>
+        ) : (
+          globalAlerts.slice(0, 5).map(alert => (
+            <div key={alert.id} style={{
+              backgroundColor: '#2c2c2e',
+              padding: '12px',
+              borderRadius: '8px',
+              marginBottom: '10px',
+              borderLeft: `4px solid ${alert.severity === 'critical' ? '#ff3b30' : alert.severity === 'high' ? '#ff9500' : '#34c759'}`
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <strong style={{ fontSize: '1rem', color: alert.severity === 'critical' ? '#ff3b30' : '#ffffff' }}>
+                  {alert.type === 'tsunami' ? '🌊 TSUNAMI' : '🌍 SISMO'} - {alert.title}
+                </strong>
+              </div>
+              <p style={{ margin: '0', fontSize: '0.85rem', color: '#aaaaaa' }}>{alert.details}</p>
+              <p style={{ margin: '4px 0 0 0', fontSize: '0.75rem', color: '#666' }}>
+                {new Date(alert.timestamp).toLocaleString()}
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+
     </div>
   )
 }
