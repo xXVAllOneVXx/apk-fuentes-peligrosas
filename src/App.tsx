@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { Motion } from '@capacitor/motion';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { App as CapacitorApp } from '@capacitor/app';
 import { AudioAnalyzer } from './AudioAnalyzer';
 import { GlobalAlertsService } from './GlobalAlertsService';
+import { MeshNetworkService } from './MeshNetworkService';
 import type { GlobalAlert } from './GlobalAlertsService';
 import './App.css';
 
@@ -13,9 +15,11 @@ function App() {
   const [motionData, setMotionData] = useState({ x: 0, y: 0, z: 0 });
   const [earthquakeAlert, setEarthquakeAlert] = useState(false);
   const [audioAlert, setAudioAlert] = useState(false);
+  const [meshAlert, setMeshAlert] = useState<string | null>(null);
   const [globalAlerts, setGlobalAlerts] = useState<GlobalAlert[]>([]);
 
   const audioAnalyzerRef = useRef<AudioAnalyzer | null>(null);
+  const meshServiceRef = useRef<MeshNetworkService>(MeshNetworkService.getInstance());
 
   // Umbral de aceleración para detectar sismo
   const THRESHOLD = 12.0;
@@ -71,16 +75,28 @@ function App() {
       }
     }, 60000);
 
+    // Background handling
+    const appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      if (!isActive && sensorsActive) {
+        triggerNativeNotification("AlertApp en Segundo Plano", "El micrófono podría ser desactivado por el sistema operativo para ahorrar batería.");
+      }
+    });
+
+    const currentAudioAnalyzer = audioAnalyzerRef.current;
+    const currentMeshService = meshServiceRef.current;
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       clearInterval(alertInterval);
       Motion.removeAllListeners();
-      if (audioAnalyzerRef.current) {
-        audioAnalyzerRef.current.stopListening();
+      if (currentAudioAnalyzer) {
+        currentAudioAnalyzer.stopListening();
       }
+      currentMeshService.disconnect();
+      appStateListener.then(listener => listener.remove());
     };
-  }, []);
+  }, [sensorsActive]);
 
   const toggleSensors = async () => {
     if (sensorsActive) {
@@ -94,6 +110,10 @@ function App() {
         audioAnalyzerRef.current.stopListening();
       }
       setAudioAlert(false);
+
+      // Apagar Mesh
+      meshServiceRef.current.disconnect();
+      setMeshAlert(null);
 
       setSensorsActive(false);
     } else {
@@ -113,6 +133,7 @@ function App() {
               "¡ALERTA DE SISMO!",
               "Se ha detectado un movimiento fuerte localmente."
             );
+            meshServiceRef.current.broadcastEmergency("Sismo Local", `Vibración extrema detectada (X: ${x.toFixed(1)})`);
             setTimeout(() => setEarthquakeAlert(false), 3000); // Resetear alerta después de 3s
           }
         });
@@ -125,6 +146,7 @@ function App() {
             "¡PELIGRO DETECTADO!",
             `La Inteligencia Artificial ha detectado la palabra clave de auxilio/peligro: "${keyword}".`
           );
+          meshServiceRef.current.broadcastEmergency("Audio Extremo", `Palabra clave detectada: ${keyword}`);
           setTimeout(() => setAudioAlert(false), 5000); // 5s alert para dar tiempo de leer
         });
 
@@ -135,6 +157,14 @@ function App() {
           alert("No se pudo acceder al micrófono. Por favor revisa los permisos.");
         }
 
+        // Iniciar Red Mesh Local
+        meshServiceRef.current.connect((message: string) => {
+          console.log("Alerta desde Mesh recibida:", message);
+          setMeshAlert(message);
+          triggerNativeNotification("¡Alerta de un Dispositivo Cercano!", message);
+          setTimeout(() => setMeshAlert(null), 10000);
+        });
+
         setSensorsActive(true);
       } catch (e) {
         console.error("Error al iniciar sensores", e);
@@ -143,7 +173,7 @@ function App() {
     }
   };
 
-  const hasAlert = earthquakeAlert || audioAlert;
+  const hasAlert = earthquakeAlert || audioAlert || meshAlert !== null;
 
   return (
     <div className="app-container">
@@ -157,7 +187,9 @@ function App() {
         <div className="status-indicator">
           <div className={`status-dot ${hasAlert ? 'danger' : 'safe'}`}></div>
           <span className="status-text">
-            {earthquakeAlert ? '¡ALERTA DE SISMO (LOCAL)!' : audioAlert ? '¡ALERTA AUDIO EXTREMO!' : 'Seguro - Monitoreando'}
+            {earthquakeAlert ? '¡ALERTA DE SISMO (LOCAL)!' :
+             audioAlert ? '¡ALERTA AUDIO EXTREMO!' :
+             meshAlert ? '¡ALERTA DE DISPOSITIVO CERCANO!' : 'Seguro - Monitoreando'}
           </span>
         </div>
         <p style={{ marginTop: '10px', fontSize: '0.9rem', color: isOnline ? '#34c759' : '#ffcc00' }}>
@@ -186,9 +218,14 @@ function App() {
             </div>
           )}
         </div>
-        <div className="sensor-item">
+        <div className="sensor-item" style={{ backgroundColor: sensorsActive ? '#1c2c1c' : '#2c2c2e' }}>
           <span className="label">Red Local (Mesh)</span>
-          <span className="value">Desconectado</span>
+          <span className="value">{sensorsActive ? 'Escuchando' : 'Desconectado'}</span>
+          {meshAlert && (
+            <div style={{ fontSize: '0.7rem', marginTop: '5px', color: '#ff3b30', fontWeight: 'bold' }}>
+              ¡Alerta Recibida!
+            </div>
+          )}
         </div>
       </div>
 
@@ -217,7 +254,10 @@ function App() {
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                 <strong style={{ fontSize: '1rem', color: alert.severity === 'critical' ? '#ff3b30' : '#ffffff' }}>
-                  {alert.type === 'tsunami' ? '🌊 TSUNAMI' : '🌍 SISMO'} - {alert.title}
+                  {alert.type === 'tsunami' ? '🌊 TSUNAMI' :
+                   alert.type === 'earthquake' ? '🌍 SISMO' :
+                   alert.type === 'terror' ? '⚠️ TERRORISMO' :
+                   alert.type === 'disaster' ? '🌋 DESASTRE' : '📰 NOTICIA'} - {alert.title}
                 </strong>
               </div>
               <p style={{ margin: '0', fontSize: '0.85rem', color: '#aaaaaa' }}>{alert.details}</p>

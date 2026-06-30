@@ -1,8 +1,10 @@
+import { XMLParser } from 'fast-xml-parser';
+
 export interface GlobalAlert {
   id: string;
   title: string;
   timestamp: number;
-  type: 'earthquake' | 'tsunami' | 'news';
+  type: 'earthquake' | 'tsunami' | 'news' | 'disaster' | 'terror';
   severity: 'low' | 'medium' | 'high' | 'critical';
   details: string;
 }
@@ -11,18 +13,32 @@ export class GlobalAlertsService {
   // USGS API for significant earthquakes in the past month
   private static readonly USGS_API_URL = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_month.geojson';
 
+  // GDACS API (Global Disaster Alert and Coordination System) via RSS Feed
+  private static readonly GDACS_RSS_URL = 'https://www.gdacs.org/xml/rss.xml';
+
   /**
    * Fetches the latest global alerts from public APIs
    */
   static async fetchLatestAlerts(): Promise<GlobalAlert[]> {
     try {
-      const response = await fetch(this.USGS_API_URL);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch USGS data: ${response.status}`);
+      const [usgsAlerts, gdacsAlerts] = await Promise.allSettled([
+        this.fetchUSGS(),
+        this.fetchGDACS()
+      ]);
+
+      let combined: GlobalAlert[] = [];
+
+      if (usgsAlerts.status === 'fulfilled') {
+        combined = [...combined, ...usgsAlerts.value];
       }
 
-      const data = await response.json();
-      return this.parseUSGSData(data);
+      if (gdacsAlerts.status === 'fulfilled') {
+        combined = [...combined, ...gdacsAlerts.value];
+      }
+
+      // Sort by timestamp descending
+      return combined.sort((a, b) => b.timestamp - a.timestamp);
+
     } catch (error) {
       console.error('Error fetching global alerts:', error);
       // Return mock data for testing if offline or API fails
@@ -37,6 +53,76 @@ export class GlobalAlertsService {
         }
       ];
     }
+  }
+
+  private static async fetchUSGS(): Promise<GlobalAlert[]> {
+    const response = await fetch(this.USGS_API_URL);
+    if (!response.ok) throw new Error(`USGS Error: ${response.status}`);
+    const data = await response.json();
+    return this.parseUSGSData(data);
+  }
+
+  private static async fetchGDACS(): Promise<GlobalAlert[]> {
+    // Some browsers block cross-origin RSS, in production this should be routed through an AWS Lambda/Backend
+    const response = await fetch(this.GDACS_RSS_URL);
+    if (!response.ok) throw new Error(`GDACS Error: ${response.status}`);
+    const xmlText = await response.text();
+
+    const parser = new XMLParser({ ignoreAttributes: false });
+    const jsonObj = parser.parse(xmlText);
+
+    return this.parseGDACSData(jsonObj);
+  }
+
+  private static parseGDACSData(data: any): GlobalAlert[] {
+    const alerts: GlobalAlert[] = [];
+
+    if (!data?.rss?.channel?.item) return alerts;
+
+    const items = Array.isArray(data.rss.channel.item) ? data.rss.channel.item : [data.rss.channel.item];
+
+    for (const item of items) {
+      const title = item.title || 'Alerta Global Desconocida';
+      const desc = item.description || '';
+
+      let severity: GlobalAlert['severity'] = 'low';
+      let type: GlobalAlert['type'] = 'disaster';
+
+      const titleLower = title.toLowerCase();
+
+      // Determine severity based on GDACS alert levels (Orange/Red)
+      if (titleLower.includes('red alert')) {
+        severity = 'critical';
+      } else if (titleLower.includes('orange alert')) {
+        severity = 'high';
+      } else if (titleLower.includes('green alert')) {
+        severity = 'low';
+      }
+
+      // Determine type
+      if (titleLower.includes('tsunami')) {
+        type = 'tsunami';
+      } else if (titleLower.includes('earthquake')) {
+        type = 'earthquake';
+      } else if (titleLower.includes('volcano') || titleLower.includes('cyclone') || titleLower.includes('flood')) {
+        type = 'disaster';
+      } else if (titleLower.includes('terror') || titleLower.includes('attack') || titleLower.includes('shooting')) {
+        type = 'terror';
+      } else {
+        type = 'news';
+      }
+
+      alerts.push({
+        id: `gdacs-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        title: title,
+        timestamp: new Date(item.pubDate || Date.now()).getTime(),
+        type: type,
+        severity: severity,
+        details: desc.replace(/(<([^>]+)>)/gi, "").substring(0, 150) + '...' // Strip HTML from RSS descriptions
+      });
+    }
+
+    return alerts;
   }
 
   private static parseUSGSData(data: any): GlobalAlert[] {
