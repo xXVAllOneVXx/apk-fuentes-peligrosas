@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: apk-fuentes-peligrosas
+    env: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
