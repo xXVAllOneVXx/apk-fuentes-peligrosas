@@ -8,6 +8,8 @@ import { AudioAnalyzer } from './AudioAnalyzer';
 import { GlobalAlertsService } from './GlobalAlertsService';
 import { MeshNetworkService } from './MeshNetworkService';
 import type { GlobalAlert } from './GlobalAlertsService';
+import { USGSService, EarthquakeFeature } from './USGSService';
+import MapComponent from './MapComponent';
 import './App.css';
 
 function App() {
@@ -27,6 +29,9 @@ function App() {
   const meshServiceRef = useRef<MeshNetworkService>(MeshNetworkService.getInstance());
 
   // Umbral de aceleración para detectar sismo
+    const [liveQuakes, setLiveQuakes] = useState<EarthquakeFeature[]>([]);
+  const [loadingQuakes, setLoadingQuakes] = useState(false);
+
   const THRESHOLD = 12.0;
 
   // Throttle para notificaciones locales (evitar spam)

@@ -19,9 +19,12 @@
     "@capacitor/motion": "^8.0.0",
     "@tensorflow-models/speech-commands": "^0.5.4",
     "@tensorflow/tfjs": "^4.22.0",
+    "@types/leaflet": "^1.9.21",
     "fast-xml-parser": "^5.9.3",
+    "leaflet": "^1.9.4",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "react-leaflet": "^5.0.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.4.1",
