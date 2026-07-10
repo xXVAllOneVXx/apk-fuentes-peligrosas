@@ -1,19 +1,17 @@
-import * as speechCommands from '@tensorflow-models/speech-commands';
-import * as tf from '@tensorflow/tfjs';
-
 export class AudioAnalyzer {
-  private recognizer: speechCommands.SpeechCommandRecognizer | null = null;
   private isListening: boolean = false;
-  private onAlertCallback: (keyword: string, probability: number) => void;
+  private onAlertCallback: () => void;
+  private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private microphone: MediaStreamAudioSourceNode | null = null;
+  private animationFrameId: number | null = null;
 
-  // Palabras clave que podrían indicar pánico u órdenes de auxilio
-  // En un entorno real se entrenaría un modelo personalizado (por ej. YAMNet)
-  // para detectar "disparos" (gunshots), pero este modelo preentrenado sirve
-  // como prueba de concepto para Machine Learning local de audio en Edge.
-  private readonly ALERT_KEYWORDS = ['stop', 'go', 'up', 'down', 'left', 'right'];
-  private readonly PROBABILITY_THRESHOLD = 0.85;
+  // Umbral alto para detectar explosiones/disparos (ruido extremadamente fuerte repentino)
+  private readonly VOLUME_THRESHOLD = 240; 
+  // Debounce para evitar alertas contiguas
+  private lastAlertTime = 0;
 
-  constructor(onAlertCallback: (keyword: string, probability: number) => void) {
+  constructor(onAlertCallback: () => void) {
     this.onAlertCallback = onAlertCallback;
   }
 
@@ -21,68 +19,59 @@ export class AudioAnalyzer {
     if (this.isListening) return true;
 
     try {
-      // Forzar uso del backend WebGL para mayor eficiencia si está disponible
-      await tf.setBackend('webgl').catch(() => tf.setBackend('cpu'));
-      await tf.ready();
-
-      // Load the pre-trained Speech Commands model
-      this.recognizer = speechCommands.create(
-        'BROWSER_FFT', // fourier transform type
-        undefined,     // vocabulary feature, null = default
-        undefined,     // custom model url
-        undefined      // custom metadata url
-      );
-
-      await this.recognizer.ensureModelLoaded();
-
-      const classLabels = this.recognizer.wordLabels();
-      console.log('Modelo de IA de audio cargado. Labels detectables:', classLabels);
-
-      // Listen for commands
-      await this.recognizer.listen(async result => {
-        if (!this.isListening) return;
-
-        const scores = result.scores as Float32Array;
-
-        // Find the most probable word
-        let maxScore = -1;
-        let maxIndex = -1;
-
-        for (let i = 0; i < scores.length; i++) {
-          if (scores[i] > maxScore) {
-            maxScore = scores[i];
-            maxIndex = i;
-          }
-        }
-
-        const topKeyword = classLabels[maxIndex];
-
-        // Trigger alert if it's a dangerous keyword and probability is high
-        if (this.ALERT_KEYWORDS.includes(topKeyword) && maxScore > this.PROBABILITY_THRESHOLD) {
-          console.log(`IA detectó audio: ${topKeyword} (prob: ${maxScore})`);
-          this.onAlertCallback(topKeyword, maxScore);
-        }
-
-      }, {
-        includeSpectrogram: false,
-        probabilityThreshold: 0.75, // Reduce el procesamiento interno omitiendo baja probabilidad
-        invokeCallbackOnNoiseAndUnknown: false,
-        overlapFactor: 0.5 // overlap en la ventana del FFT
-      });
-
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      
+      this.microphone = this.audioContext.createMediaStreamSource(stream);
+      this.microphone.connect(this.analyser);
+      
       this.isListening = true;
+      this.detectExplosions();
       return true;
-    } catch (err) {
-      console.error('Error inicializando el modelo de IA para el micrófono:', err);
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
       return false;
     }
   }
 
-  stopListening() {
-    this.isListening = false;
+  private detectExplosions = () => {
+    if (!this.isListening || !this.analyser) return;
 
-    if (this.recognizer) {
-      this.recognizer.stopListening();
+    const bufferLength = this.analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    
+    this.analyser.getByteFrequencyData(dataArray);
+
+    // Encontrar el pico de volumen en las frecuencias actuales
+    let peakVolume = 0;
+    for (let i = 0; i < bufferLength; i++) {
+        if (dataArray[i] > peakVolume) {
+            peakVolume = dataArray[i];
+        }
+    }
+
+    const now = Date.now();
+    // Si el volumen supera el umbral crítico de peligro (ej. un estallido) y pasaron 10seg desde la ultima
+    if (peakVolume > this.VOLUME_THRESHOLD && (now - this.lastAlertTime > 10000)) {
+        this.lastAlertTime = now;
+        this.onAlertCallback();
+    }
+
+    this.animationFrameId = requestAnimationFrame(this.detectExplosions);
+  }
+
+  stopListening(): void {
+    this.isListening = false;
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+    }
+    if (this.microphone && this.microphone.mediaStream) {
+      this.microphone.mediaStream.getTracks().forEach(track => track.stop());
+    }
+    if (this.audioContext) {
+      this.audioContext.close();
     }
   }
 }

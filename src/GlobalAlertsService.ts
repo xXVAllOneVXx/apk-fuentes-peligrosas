@@ -12,7 +12,7 @@ export interface GlobalAlert {
 
 export class GlobalAlertsService {
   // USGS API for significant earthquakes in the past month
-  private static readonly USGS_API_URL = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_month.geojson';
+  private static readonly USGS_API_URL = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_day.geojson';
 
   // GDACS API (Global Disaster Alert and Coordination System) via RSS Feed
   private static readonly GDACS_RSS_URL = 'https://www.gdacs.org/xml/rss.xml';

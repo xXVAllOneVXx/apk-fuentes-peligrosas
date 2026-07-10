@@ -17,8 +17,6 @@
     "@capacitor/ios": "^8.4.1",
     "@capacitor/local-notifications": "^8.2.0",
     "@capacitor/motion": "^8.0.0",
-    "@tensorflow-models/speech-commands": "^0.5.4",
-    "@tensorflow/tfjs": "^4.22.0",
     "@types/leaflet": "^1.9.21",
     "fast-xml-parser": "^5.9.3",
     "leaflet": "^1.9.4",

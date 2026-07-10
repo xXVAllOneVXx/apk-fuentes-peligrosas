@@ -227,17 +227,15 @@ function App() {
       });
 
       // 2. Iniciar análisis de Audio (Disparos / Explosiones con IA en TensorFlow.js)
-      currentAudioAnalyzer = new AudioAnalyzer(
-          () => {
-              const now = Date.now();
-              if (now - lastNotificationTime.current > 10000) {
-                  lastNotificationTime.current = now;
-                  setAudioAlert(true);
-                  HostingerService.reportEvent('audio_peligro', lat, lng);
-                  setTimeout(() => setAudioAlert(false), 5000);
-              }
+      currentAudioAnalyzer = new AudioAnalyzer(() => {
+          const now = Date.now();
+          if (now - lastNotificationTime.current > 10000) {
+              lastNotificationTime.current = now;
+              setAudioAlert(true);
+              HostingerService.reportEvent('audio_peligro', lat, lng);
+              setTimeout(() => setAudioAlert(false), 5000);
           }
-      );
+      });
       currentAudioAnalyzer.startListening().catch(e => console.error("Microphone err:", e));
       audioAnalyzerRef.current = currentAudioAnalyzer;
 
@@ -307,16 +305,7 @@ function App() {
         });
 
         // Iniciar Micrófono con TensorFlow.js
-        const analyzer = new AudioAnalyzer((keyword, probability) => {
-          console.log("IA detectó palabra clave:", keyword, "Probabilidad:", probability);
-          setAudioAlert(true);
-          triggerNativeNotification(
-            "¡PELIGRO DETECTADO!",
-            `La Inteligencia Artificial ha detectado la palabra clave de auxilio/peligro: "${keyword}".`
-          );
-          meshServiceRef.current.broadcastEmergency("Audio Extremo", `Palabra clave detectada: ${keyword}`);
-          setTimeout(() => setAudioAlert(false), 5000); // 5s alert para dar tiempo de leer
-        });
+        const analyzer = new AudioAnalyzer(() => { setAudioAlert(true); setTimeout(() => setAudioAlert(false), 5000); });
 
         const audioStarted = await analyzer.startListening();
         if (audioStarted) {
@@ -349,6 +338,26 @@ function App() {
         <h1>AlertApp</h1>
         <p>Sistema de Alerta Temprana Descentralizado</p>
       </header>
+
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <a 
+          href="./AlertApp.apk" 
+          download="AlertApp.apk"
+          style={{
+            display: 'inline-block',
+            backgroundColor: '#34a853',
+            color: 'white',
+            padding: '12px 24px',
+            borderRadius: '8px',
+            textDecoration: 'none',
+            fontWeight: 'bold',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.2)'
+          }}
+        >
+          ⬇️ Descargar APK Nativa Android
+        </a>
+      </div>
+
 
 
 
