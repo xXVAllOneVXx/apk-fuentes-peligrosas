@@ -11,6 +11,7 @@ import type { GlobalAlert } from './GlobalAlertsService';
 import { USGSService } from './USGSService';
 import type { EarthquakeFeature } from './USGSService';
 import MapComponent from './MapComponent';
+import { HostingerService } from './HostingerService';
 import './App.css';
 
 function App() {
@@ -198,6 +199,72 @@ function App() {
       }
       currentMeshService.disconnect();
       appStateListener.then(listener => listener.remove());
+    };
+  }, [sensorsActive, userLocation]);
+
+
+  // Activar sensores
+  useEffect(() => {
+    
+    let pollInterval: any;
+    let currentAudioAnalyzer: AudioAnalyzer | null = null;
+
+    if (sensorsActive && userLocation) {
+      const lat = userLocation.coords.latitude;
+      const lng = userLocation.coords.longitude;
+
+      // 1. Escuchar Acelerómetro (Sismos Locales)
+      Motion.addListener('accel', (event) => {
+        setMotionData({ x: event.acceleration.x, y: event.acceleration.y, z: event.acceleration.z });
+        const magnitude = Math.sqrt(event.acceleration.x ** 2 + event.acceleration.y ** 2 + event.acceleration.z ** 2);
+        
+        if (magnitude > THRESHOLD) {
+            const now = Date.now();
+            if (now - lastNotificationTime.current > 10000) {
+                lastNotificationTime.current = now;
+                setEarthquakeAlert(true);
+                HostingerService.reportEvent('sismo', lat, lng);
+                setTimeout(() => setEarthquakeAlert(false), 5000);
+            }
+        }
+      });
+
+      // 2. Iniciar análisis de Audio (Disparos / Explosiones con IA en TensorFlow.js)
+      currentAudioAnalyzer = new AudioAnalyzer(
+          () => {
+              const now = Date.now();
+              if (now - lastNotificationTime.current > 10000) {
+                  lastNotificationTime.current = now;
+                  setAudioAlert(true);
+                  HostingerService.reportEvent('audio_peligro', lat, lng);
+                  setTimeout(() => setAudioAlert(false), 5000);
+              }
+          }
+      );
+      currentAudioAnalyzer.startListening().catch(e => console.error("Microphone err:", e));
+      audioAnalyzerRef.current = currentAudioAnalyzer;
+
+      // 3. Polling a Hostinger ("Red Mesh" comunitaria en la nube)
+      pollInterval = setInterval(async () => {
+          const alerts = await HostingerService.pollAlerts(lat, lng);
+          if (alerts.length > 0) {
+              const latestAlert = alerts[0];
+              setMeshAlert(`¡ALERTA COMUNITARIA! ${latestAlert.alert_type.toUpperCase()} detectado a ${parseFloat(latestAlert.distance).toFixed(1)} km.`);
+              LocalNotifications.schedule({
+                  notifications: [{
+                      title: "¡ALERTA CERCANA!",
+                      body: `Se ha detectado un posible ${latestAlert.alert_type} cerca de ti.`,
+                      id: 1
+                  }]
+              });
+          }
+      }, 15000); // Poll cada 15 segundos
+    }
+
+    return () => {
+      Motion.removeAllListeners();
+      if (currentAudioAnalyzer) currentAudioAnalyzer.stopListening();
+      if (pollInterval) clearInterval(pollInterval);
     };
   }, [sensorsActive, userLocation]);
 
