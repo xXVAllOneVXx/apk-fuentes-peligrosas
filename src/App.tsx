@@ -8,7 +8,8 @@ import { AudioAnalyzer } from './AudioAnalyzer';
 import { GlobalAlertsService } from './GlobalAlertsService';
 import { MeshNetworkService } from './MeshNetworkService';
 import type { GlobalAlert } from './GlobalAlertsService';
-import { USGSService, EarthquakeFeature } from './USGSService';
+import { USGSService } from './USGSService';
+import type { EarthquakeFeature } from './USGSService';
 import MapComponent from './MapComponent';
 import './App.css';
 
@@ -29,10 +30,25 @@ function App() {
   const meshServiceRef = useRef<MeshNetworkService>(MeshNetworkService.getInstance());
 
   // Umbral de aceleración para detectar sismo
-    const [liveQuakes, setLiveQuakes] = useState<EarthquakeFeature[]>([]);
+  
+
+  const [liveQuakes, setLiveQuakes] = useState<EarthquakeFeature[]>([]);
   const [loadingQuakes, setLoadingQuakes] = useState(false);
 
+  useEffect(() => {
+    const fetchQuakes = async () => {
+      setLoadingQuakes(true);
+      const quakes = await USGSService.getRecentEarthquakes();
+      setLiveQuakes(quakes);
+      setLoadingQuakes(false);
+    };
+    fetchQuakes();
+    const interval = setInterval(fetchQuakes, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const THRESHOLD = 12.0;
+
 
   // Throttle para notificaciones locales (evitar spam)
   const lastNotificationTime = useRef(0);
@@ -290,7 +306,19 @@ function App() {
         </button>
       )}
 
+
+      <div className="card" style={{ backgroundColor: '#1e1e1e', padding: '15px', borderRadius: '10px', marginBottom: '20px' }}>
+        <h2>Sismos en Tiempo Real (USGS)</h2>
+        <p>Datos oficiales de actividad sísmica global.</p>
+        {loadingQuakes ? (
+          <p>Cargando datos sísmicos desde satélite...</p>
+        ) : (
+          <MapComponent earthquakes={liveQuakes} userLocation={userLocation ? {lat: userLocation.coords.latitude, lng: userLocation.coords.longitude} : null} />
+        )}
+      </div>
+
       <div className="status-card" style={{ backgroundColor: hasAlert ? '#4a1111' : '#1e1e1e' }}>
+
         <h2>Estado Global</h2>
         <div className="status-indicator">
           <div className={`status-dot ${hasAlert ? 'danger' : 'safe'}`}></div>
