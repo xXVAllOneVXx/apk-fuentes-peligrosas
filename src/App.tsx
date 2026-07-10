@@ -24,8 +24,6 @@ function App() {
   const [meshAlert, setMeshAlert] = useState<string | null>(null);
   const [globalAlerts, setGlobalAlerts] = useState<GlobalAlert[]>([]);
   const [userLocation, setUserLocation] = useState<Position | null>(null);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstallable, setIsInstallable] = useState(false);
 
   const audioAnalyzerRef = useRef<AudioAnalyzer | null>(null);
   const meshServiceRef = useRef<MeshNetworkService>(MeshNetworkService.getInstance());
@@ -172,8 +170,7 @@ function App() {
     // PWA Install Prompt handling
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      setDeferredPrompt(e);
-      setIsInstallable(true);
+      
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -268,16 +265,6 @@ function App() {
     };
   }, [sensorsActive, userLocation]);
 
-  const handleInstallClick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') {
-        setIsInstallable(false);
-      }
-      setDeferredPrompt(null);
-    }
-  };
 
   const toggleSensors = async () => {
     if (sensorsActive) {
@@ -363,15 +350,7 @@ function App() {
         <p>Sistema de Alerta Temprana Descentralizado</p>
       </header>
 
-      {isInstallable && (
-        <button
-          className="action-button"
-          onClick={handleInstallClick}
-          style={{ backgroundColor: '#34c759', marginBottom: '20px' }}
-        >
-          ⬇️ Instalar AlertApp
-        </button>
-      )}
+
 
 
       <div className="card" style={{ backgroundColor: '#1e1e1e', padding: '15px', borderRadius: '10px', marginBottom: '20px' }}>
