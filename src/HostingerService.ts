@@ -31,8 +31,17 @@ export class HostingerService {
     static async pollAlerts(lat: number, lng: number): Promise<any[]> {
         try {
             const res = await fetch(`${API_URL}?lat=${lat}&lng=${lng}`);
-            const data = await res.json();
-            return data.alerts || [];
+
+            // Validar que la respuesta sea realmente JSON
+            // El endpoint actual devuelve HTML (Content-Type: text/html)
+            const contentType = res.headers.get("content-type");
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                const data = await res.json();
+                return data.alerts || [];
+            } else {
+                console.warn("[HostingerService] El endpoint no devolvió JSON (probablemente retornó la web HTML). Ignorando para no romper la app.");
+                return [];
+            }
         } catch (e) {
             console.error("Error consultando alertas de Hostinger:", e);
             return [];

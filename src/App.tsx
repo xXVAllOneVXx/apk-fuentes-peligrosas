@@ -46,9 +46,6 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const THRESHOLD = 12.0;
-
-
   // Throttle para notificaciones locales (evitar spam)
   const lastNotificationTime = useRef(0);
 
@@ -211,13 +208,31 @@ function App() {
       const lng = userLocation.coords.longitude;
 
       // 1. Escuchar Acelerómetro (Sismos Locales)
+      let bgAccelBuffer: {x: number, y: number, z: number}[] = [];
       Motion.addListener('accel', (event) => {
-        setMotionData({ x: event.acceleration.x, y: event.acceleration.y, z: event.acceleration.z });
-        const magnitude = Math.sqrt(event.acceleration.x ** 2 + event.acceleration.y ** 2 + event.acceleration.z ** 2);
+        const x = event.acceleration.x || 0;
+        const y = event.acceleration.y || 0;
+        const z = event.acceleration.z || 0;
+        setMotionData({ x, y, z });
         
-        if (magnitude > THRESHOLD) {
+        bgAccelBuffer.push({ x, y, z });
+        if (bgAccelBuffer.length > 50) bgAccelBuffer.shift();
+
+        if (bgAccelBuffer.length === 50) {
+            let sumMag = 0;
+            const magnitudes = bgAccelBuffer.map(d => Math.sqrt(d.x*d.x + d.y*d.y + d.z*d.z));
+            magnitudes.forEach(m => sumMag += m);
+            const meanMag = sumMag / magnitudes.length;
+
+            let sumVar = 0;
+            magnitudes.forEach(m => sumVar += Math.pow(m - meanMag, 2));
+            const variance = sumVar / magnitudes.length;
+
+            const MIN_VARIANCE = 2.5;
+            const MAX_VARIANCE = 50.0;
+
             const now = Date.now();
-            if (now - lastNotificationTime.current > 10000) {
+            if (variance > MIN_VARIANCE && variance < MAX_VARIANCE && (now - lastNotificationTime.current > 10000)) {
                 lastNotificationTime.current = now;
                 setEarthquakeAlert(true);
                 HostingerService.reportEvent('sismo', lat, lng);
@@ -285,6 +300,7 @@ function App() {
     } else {
       try {
         // Iniciar Acelerómetro
+        let accelBuffer: {x: number, y: number, z: number}[] = [];
         await Motion.addListener('accel', (event) => {
           const x = event.acceleration.x || 0;
           const y = event.acceleration.y || 0;
@@ -292,15 +308,42 @@ function App() {
 
           setMotionData({ x, y, z });
 
-          // Si la aceleración supera el umbral en cualquier eje, disparamos alerta
-          if (Math.abs(x) > THRESHOLD || Math.abs(y) > THRESHOLD || Math.abs(z) > THRESHOLD) {
-            setEarthquakeAlert(true);
-            triggerNativeNotification(
-              "¡ALERTA DE SISMO!",
-              "Se ha detectado un movimiento fuerte localmente."
-            );
-            meshServiceRef.current.broadcastEmergency("Sismo Local", `Vibración extrema detectada (X: ${x.toFixed(1)})`);
-            setTimeout(() => setEarthquakeAlert(false), 3000); // Resetear alerta después de 3s
+          // Implementación del Rolling Buffer para análisis de varianza
+          accelBuffer.push({ x, y, z });
+          if (accelBuffer.length > 50) { // Mantener ventana de ~1 segundo (asumiendo 50Hz)
+            accelBuffer.shift();
+          }
+
+          if (accelBuffer.length === 50) {
+            // Calcular media de la magnitud
+            let sumMag = 0;
+            const magnitudes = accelBuffer.map(d => Math.sqrt(d.x*d.x + d.y*d.y + d.z*d.z));
+            magnitudes.forEach(m => sumMag += m);
+            const meanMag = sumMag / magnitudes.length;
+
+            // Calcular Varianza
+            let sumVar = 0;
+            magnitudes.forEach(m => sumVar += Math.pow(m - meanMag, 2));
+            const variance = sumVar / magnitudes.length;
+
+            // Para que sea un sismo real:
+            // 1. Debe haber vibración sostenida (varianza alta pero no un solo pico gigante).
+            // 2. Descartamos golpes aislados si la varianza es extremadamente alta solo un momento.
+            // Una varianza entre 2.5 y 50.0 sostenida indica un sismo moderado/fuerte.
+            const MIN_VARIANCE = 2.5;
+            const MAX_VARIANCE = 50.0; // Descartar caídas del dispositivo
+
+            const now = Date.now();
+            if (variance > MIN_VARIANCE && variance < MAX_VARIANCE && (now - lastNotificationTime.current > 10000)) {
+               lastNotificationTime.current = now;
+               setEarthquakeAlert(true);
+               triggerNativeNotification(
+                 "¡ALERTA DE SISMO!",
+                 "Se ha detectado un movimiento sísmico localmente."
+               );
+               meshServiceRef.current.broadcastEmergency("Sismo Local", `Vibración sísmica detectada (Var: ${variance.toFixed(2)})`);
+               setTimeout(() => setEarthquakeAlert(false), 5000);
+            }
           }
         });
 
