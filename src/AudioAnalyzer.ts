@@ -6,8 +6,6 @@ export class AudioAnalyzer {
   private microphone: MediaStreamAudioSourceNode | null = null;
   private animationFrameId: number | null = null;
 
-  // Umbral alto para detectar explosiones/disparos (ruido extremadamente fuerte repentino)
-  private readonly VOLUME_THRESHOLD = 240; 
   // Debounce para evitar alertas contiguas
   private lastAlertTime = 0;
 
@@ -39,22 +37,44 @@ export class AudioAnalyzer {
   private detectExplosions = () => {
     if (!this.isListening || !this.analyser) return;
 
-    const bufferLength = this.analyser.frequencyBinCount;
+    // Usar datos en el dominio del tiempo para calcular RMS (Energía) y Tasa de Cruce por Cero (ZCR)
+    const bufferLength = this.analyser.fftSize;
     const dataArray = new Uint8Array(bufferLength);
     
-    this.analyser.getByteFrequencyData(dataArray);
+    this.analyser.getByteTimeDomainData(dataArray);
 
-    // Encontrar el pico de volumen en las frecuencias actuales
-    let peakVolume = 0;
+    let sumSquares = 0;
+    let zeroCrossings = 0;
+    let previousValue = dataArray[0] - 128; // Centrar alrededor de 0
+
     for (let i = 0; i < bufferLength; i++) {
-        if (dataArray[i] > peakVolume) {
-            peakVolume = dataArray[i];
+        // Normalizar a un rango de -1 a 1 aprox
+        const normalized = (dataArray[i] - 128) / 128;
+        sumSquares += normalized * normalized;
+
+        const currentValue = dataArray[i] - 128;
+        // Detectar si la onda cruzó el eje cero
+        if ((previousValue >= 0 && currentValue < 0) || (previousValue < 0 && currentValue >= 0)) {
+            zeroCrossings++;
         }
+        previousValue = currentValue;
     }
 
+    // Root Mean Square (RMS) representa la energía matemática de la señal
+    const rms = Math.sqrt(sumSquares / bufferLength);
+
+    // Zero-Crossing Rate (ZCR) ayuda a distinguir ruido de alta frecuencia vs ruido vocal/humano
+    const zcr = zeroCrossings / bufferLength;
+
     const now = Date.now();
-    // Si el volumen supera el umbral crítico de peligro (ej. un estallido) y pasaron 10seg desde la ultima
-    if (peakVolume > this.VOLUME_THRESHOLD && (now - this.lastAlertTime > 10000)) {
+
+    // Umbrales científicos para una explosión o disparo:
+    // Tienen un pico de energía enorme y repentino (RMS alto) y suelen ser ruido de banda ancha (ZCR moderado/alto).
+    // Evita falsos positivos como un soplido, gritos comunes o decir "puf".
+    const RMS_THRESHOLD = 0.45; // Energía sostenida alta
+    const ZCR_MIN = 0.15; // Evitar ruidos vocales graves de baja frecuencia
+
+    if (rms > RMS_THRESHOLD && zcr > ZCR_MIN && (now - this.lastAlertTime > 10000)) {
         this.lastAlertTime = now;
         this.onAlertCallback();
     }
