@@ -5,7 +5,7 @@ export interface GlobalAlert {
   title: string;
   timestamp: number;
   type: 'earthquake' | 'tsunami' | 'news' | 'disaster' | 'terror';
-  severity: 'low' | 'medium' | 'high' | 'critical';
+  severity: 'micro' | 'low' | 'medium' | 'high' | 'critical';
   details: string;
   coordinates?: { lat: number; lng: number };
 }
@@ -143,12 +143,14 @@ export class GlobalAlertsService {
 
     return data.features.map((feature: any) => {
       const mag = feature.properties.mag;
-      let severity: GlobalAlert['severity'] = 'low';
+      let severity: GlobalAlert['severity'] = 'micro';
       let type: GlobalAlert['type'] = 'earthquake';
 
-      if (mag >= 7.0) severity = 'critical';
-      else if (mag >= 6.0) severity = 'high';
-      else if (mag >= 5.0) severity = 'medium';
+      if (mag >= 6.0) severity = 'critical';       // Severo >= 6.0
+      else if (mag >= 5.0) severity = 'high';      // Fuerte 5.0 - 5.9
+      else if (mag >= 4.0) severity = 'medium';    // Moderado 4.0 - 4.9
+      else if (mag >= 3.0) severity = 'low';       // Leve 3.0 - 3.9
+      else severity = 'micro';                     // Micro < 3.0
 
       // USGS sometimes flags potential tsunamis
       if (feature.properties.tsunami === 1) {
