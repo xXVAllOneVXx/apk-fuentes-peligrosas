@@ -98,7 +98,7 @@ export class AudioAnalyzer {
         const now = Date.now();
 
         // Umbrales para detección: un pico repentino de X veces la energía ambiental promedio
-        const LOW_FREQ_MULTIPLIER = 5.0; // Picos de baja frecuencia
+        const LOW_FREQ_MULTIPLIER = 4.0; // Infrasonido / Ondas P acústicas
         const HIGH_FREQ_MULTIPLIER = 4.0; // Picos de alta frecuencia
 
         // Evitar falsos positivos en entornos de silencio casi absoluto
@@ -107,7 +107,7 @@ export class AudioAnalyzer {
         if (now - this.lastAlertTime > 10000) {
             if (lowFreqEnergy > this.baselineLowFreqEnergy * LOW_FREQ_MULTIPLIER && lowFreqEnergy > MIN_ENERGY) {
                 this.lastAlertTime = now;
-                this.onAlertCallback("Infrasonido/Baja Frecuencia Anómala");
+                this.onAlertCallback("Microsismo Acústico (Onda P Infrasonido)");
             } else if (highFreqEnergy > this.baselineHighFreqEnergy * HIGH_FREQ_MULTIPLIER && highFreqEnergy > MIN_ENERGY) {
                 this.lastAlertTime = now;
                 this.onAlertCallback("Alta Frecuencia Anómala");
