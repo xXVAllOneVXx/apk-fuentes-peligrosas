@@ -63,28 +63,45 @@ function App() {
     return d;
   };
 
+  const notifiedAlertIds = useRef<Set<string>>(new Set());
+
   const checkGlobalAlertsProximity = (alerts: GlobalAlert[], currentLocation: Position) => {
-    const RADIUS_KM = 500; // Radius to consider an event "dangerous" to the user
+    const RADIUS_KM = 1000; // Radio amplio para cubrir el país (~1000km)
 
     alerts.forEach(alert => {
-      // Only process severe alerts that happened recently (e.g. last 1 hour)
-      const oneHourAgo = Date.now() - (60 * 60 * 1000);
-      if (alert.timestamp < oneHourAgo) return;
+      // Solo procesar alertas muy recientes (últimos 15 minutos)
+      const isNew = (Date.now() - alert.timestamp) < (15 * 60 * 1000);
+      if (!isNew || notifiedAlertIds.current.has(alert.id)) return;
 
-      if ((alert.severity === 'high' || alert.severity === 'critical') && alert.coordinates) {
+      let shouldNotify = false;
+      let distanceMsg = "";
+
+      if (alert.coordinates) {
         const distance = calculateDistance(
           currentLocation.coords.latitude,
           currentLocation.coords.longitude,
           alert.coordinates.lat,
           alert.coordinates.lng
         );
+        distanceMsg = ` a ${Math.round(distance)}km de ti.`;
 
+        // Notificar si está en mi país/región (< 1000km) sin importar severidad
         if (distance <= RADIUS_KM) {
-           triggerNativeNotification(
-             `¡PELIGRO CERCANO: ${alert.title}!`,
-             `Se ha detectado un evento extremo a ${Math.round(distance)}km de tu ubicación. Toma precauciones inmediatamente.`
-           );
+           shouldNotify = true;
         }
+      }
+
+      // Notificar si es un evento crítico global sin importar la distancia
+      if (alert.severity === 'high' || alert.severity === 'critical') {
+          shouldNotify = true;
+      }
+
+      if (shouldNotify) {
+         triggerNativeNotification(
+           `¡NUEVA ALERTA: ${alert.title}!`,
+           `Severidad: ${alert.severity.toUpperCase()}.${distanceMsg} ${alert.details}`
+         );
+         notifiedAlertIds.current.add(alert.id);
       }
     });
   };
@@ -94,6 +111,31 @@ function App() {
 
     const alerts = await GlobalAlertsService.fetchLatestAlerts();
     setGlobalAlerts(alerts);
+
+    // Actualizar también liveQuakes para el mapa para que no haya desfasaje
+    const quakes = alerts.filter(a => a.type === 'earthquake' && a.coordinates).map(a => ({
+      type: 'Feature',
+      properties: {
+        mag: a.severity === 'critical' ? 7.0 : a.severity === 'high' ? 6.0 : a.severity === 'medium' ? 5.0 : 4.0,
+        place: a.details,
+        time: a.timestamp,
+        updated: Date.now(),
+        url: '',
+        detail: '',
+        status: 'automatic',
+        tsunami: 0,
+        sig: 0,
+        net: 'us',
+        code: a.id,
+        title: a.title
+      },
+      geometry: {
+        type: 'Point',
+        coordinates: a.coordinates ? [a.coordinates.lng, a.coordinates.lat, 0] : [0,0,0]
+      },
+      id: a.id
+    }));
+    setLiveQuakes(quakes as any);
 
     if (loc) {
       checkGlobalAlertsProximity(alerts, loc);
@@ -145,10 +187,14 @@ function App() {
           await Geolocation.requestPermissions();
         }
 
-        initialLocation = await Geolocation.getCurrentPosition();
+        // Usar alta precisión para asegurar la geolocalización exacta en el municipio
+        initialLocation = await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0 // Forzar obtener ubicación fresca, no cacheada
+        });
         setUserLocation(initialLocation);
 
-        // Empezar a monitorear posición (opcional, para esta PoC tomamos la inicial)
       } catch (e) {
         console.error("No se pudo obtener la ubicación:", e);
       }
@@ -208,33 +254,57 @@ function App() {
       const lng = userLocation.coords.longitude;
 
       // 1. Escuchar Acelerómetro (Sismos Locales)
-      let bgAccelBuffer: {x: number, y: number, z: number}[] = [];
+      let bgAccelBuffer: number[] = [];
+      const BUFFER_SIZE = 64; // Potencia de 2 para análisis más fácil
+
       Motion.addListener('accel', (event) => {
         const x = event.acceleration.x || 0;
         const y = event.acceleration.y || 0;
         const z = event.acceleration.z || 0;
         setMotionData({ x, y, z });
         
-        bgAccelBuffer.push({ x, y, z });
-        if (bgAccelBuffer.length > 50) bgAccelBuffer.shift();
+        const magnitude = Math.sqrt(x*x + y*y + z*z);
+        bgAccelBuffer.push(magnitude);
+        if (bgAccelBuffer.length > BUFFER_SIZE) bgAccelBuffer.shift();
 
-        if (bgAccelBuffer.length === 50) {
-            let sumMag = 0;
-            const magnitudes = bgAccelBuffer.map(d => Math.sqrt(d.x*d.x + d.y*d.y + d.z*d.z));
-            magnitudes.forEach(m => sumMag += m);
-            const meanMag = sumMag / magnitudes.length;
+        if (bgAccelBuffer.length === BUFFER_SIZE) {
+            // Aplicar un filtro pasa-bajos simple (Moving Average)
+            const smoothed: number[] = [];
+            for (let i = 2; i < BUFFER_SIZE - 2; i++) {
+               smoothed.push((bgAccelBuffer[i-2] + bgAccelBuffer[i-1] + bgAccelBuffer[i] + bgAccelBuffer[i+1] + bgAccelBuffer[i+2]) / 5);
+            }
 
-            let sumVar = 0;
-            magnitudes.forEach(m => sumVar += Math.pow(m - meanMag, 2));
-            const variance = sumVar / magnitudes.length;
+            // Calcular energía (RMS) de la señal filtrada
+            let sumEnergy = 0;
+            smoothed.forEach(v => sumEnergy += v*v);
+            const rms = Math.sqrt(sumEnergy / smoothed.length);
 
-            const MIN_VARIANCE = 2.5;
-            const MAX_VARIANCE = 50.0;
+            // Calcular cruces por cero de la media para estimar frecuencia (Zero-Crossing)
+            let mean = smoothed.reduce((a, b) => a + b, 0) / smoothed.length;
+            let zeroCrossings = 0;
+            for (let i = 1; i < smoothed.length; i++) {
+                if ((smoothed[i-1] - mean) * (smoothed[i] - mean) < 0) {
+                    zeroCrossings++;
+                }
+            }
+
+            // Frecuencia estimada (asumiendo ~50 muestras por segundo)
+            const durationSec = smoothed.length / 50;
+            const estimatedHz = (zeroCrossings / 2) / durationSec;
+
+            // Sismos reales: Energía significativa (pero no extremo como un golpe)
+            // y baja frecuencia (típicamente entre 0.5Hz y 10Hz)
+            const MIN_ENERGY = 1.0;
+            const MAX_ENERGY = 15.0; // Descartar golpes fuertes/caídas
 
             const now = Date.now();
-            if (variance > MIN_VARIANCE && variance < MAX_VARIANCE && (now - lastNotificationTime.current > 10000)) {
+            if (rms > MIN_ENERGY && rms < MAX_ENERGY && estimatedHz >= 0.5 && estimatedHz <= 15.0 && (now - lastNotificationTime.current > 10000)) {
                 lastNotificationTime.current = now;
                 setEarthquakeAlert(true);
+                triggerNativeNotification(
+                  "¡ALERTA DE SISMO (Fondo)!",
+                  `Movimiento sísmico detectado. (Energía: ${rms.toFixed(2)}, Freq: ${estimatedHz.toFixed(1)}Hz)`
+                );
                 HostingerService.reportEvent('sismo', lat, lng);
                 setTimeout(() => setEarthquakeAlert(false), 5000);
             }
@@ -242,11 +312,15 @@ function App() {
       });
 
       // 2. Iniciar análisis de Audio (Disparos / Explosiones con IA en TensorFlow.js)
-      currentAudioAnalyzer = new AudioAnalyzer(() => {
+      currentAudioAnalyzer = new AudioAnalyzer((reason?: string) => {
           const now = Date.now();
           if (now - lastNotificationTime.current > 10000) {
               lastNotificationTime.current = now;
               setAudioAlert(true);
+              triggerNativeNotification(
+                  "¡ALERTA DE AUDIO EXTREMO!",
+                  reason || "Anomalía acústica detectada."
+              );
               HostingerService.reportEvent('audio_peligro', lat, lng);
               setTimeout(() => setAudioAlert(false), 5000);
           }
@@ -300,7 +374,8 @@ function App() {
     } else {
       try {
         // Iniciar Acelerómetro
-        let accelBuffer: {x: number, y: number, z: number}[] = [];
+        let accelBuffer: number[] = [];
+        const BUFFER_SIZE = 64; // Potencia de 2 para análisis más fácil
         await Motion.addListener('accel', (event) => {
           const x = event.acceleration.x || 0;
           const y = event.acceleration.y || 0;
@@ -308,47 +383,61 @@ function App() {
 
           setMotionData({ x, y, z });
 
-          // Implementación del Rolling Buffer para análisis de varianza
-          accelBuffer.push({ x, y, z });
-          if (accelBuffer.length > 50) { // Mantener ventana de ~1 segundo (asumiendo 50Hz)
+          const magnitude = Math.sqrt(x*x + y*y + z*z);
+          accelBuffer.push(magnitude);
+          if (accelBuffer.length > BUFFER_SIZE) {
             accelBuffer.shift();
           }
 
-          if (accelBuffer.length === 50) {
-            // Calcular media de la magnitud
-            let sumMag = 0;
-            const magnitudes = accelBuffer.map(d => Math.sqrt(d.x*d.x + d.y*d.y + d.z*d.z));
-            magnitudes.forEach(m => sumMag += m);
-            const meanMag = sumMag / magnitudes.length;
+          if (accelBuffer.length === BUFFER_SIZE) {
+            // Aplicar un filtro pasa-bajos simple (Moving Average)
+            const smoothed: number[] = [];
+            for (let i = 2; i < BUFFER_SIZE - 2; i++) {
+               smoothed.push((accelBuffer[i-2] + accelBuffer[i-1] + accelBuffer[i] + accelBuffer[i+1] + accelBuffer[i+2]) / 5);
+            }
 
-            // Calcular Varianza
-            let sumVar = 0;
-            magnitudes.forEach(m => sumVar += Math.pow(m - meanMag, 2));
-            const variance = sumVar / magnitudes.length;
+            // Calcular energía (RMS) de la señal filtrada
+            let sumEnergy = 0;
+            smoothed.forEach(v => sumEnergy += v*v);
+            const rms = Math.sqrt(sumEnergy / smoothed.length);
 
-            // Para que sea un sismo real:
-            // 1. Debe haber vibración sostenida (varianza alta pero no un solo pico gigante).
-            // 2. Descartamos golpes aislados si la varianza es extremadamente alta solo un momento.
-            // Una varianza entre 2.5 y 50.0 sostenida indica un sismo moderado/fuerte.
-            const MIN_VARIANCE = 2.5;
-            const MAX_VARIANCE = 50.0; // Descartar caídas del dispositivo
+            // Calcular cruces por cero de la media para estimar frecuencia (Zero-Crossing)
+            let mean = smoothed.reduce((a, b) => a + b, 0) / smoothed.length;
+            let zeroCrossings = 0;
+            for (let i = 1; i < smoothed.length; i++) {
+                if ((smoothed[i-1] - mean) * (smoothed[i] - mean) < 0) {
+                    zeroCrossings++;
+                }
+            }
+
+            // Frecuencia estimada (asumiendo ~50 muestras por segundo)
+            const durationSec = smoothed.length / 50;
+            const estimatedHz = (zeroCrossings / 2) / durationSec;
+
+            // Sismos reales: Energía significativa y baja frecuencia (típicamente entre 0.5Hz y 10Hz)
+            const MIN_ENERGY = 1.0;
+            const MAX_ENERGY = 15.0; // Descartar golpes fuertes/caídas
 
             const now = Date.now();
-            if (variance > MIN_VARIANCE && variance < MAX_VARIANCE && (now - lastNotificationTime.current > 10000)) {
+            if (rms > MIN_ENERGY && rms < MAX_ENERGY && estimatedHz >= 0.5 && estimatedHz <= 15.0 && (now - lastNotificationTime.current > 10000)) {
                lastNotificationTime.current = now;
                setEarthquakeAlert(true);
                triggerNativeNotification(
                  "¡ALERTA DE SISMO!",
-                 "Se ha detectado un movimiento sísmico localmente."
+                 `Se ha detectado un movimiento sísmico localmente. (Freq: ${estimatedHz.toFixed(1)}Hz)`
                );
-               meshServiceRef.current.broadcastEmergency("Sismo Local", `Vibración sísmica detectada (Var: ${variance.toFixed(2)})`);
+               meshServiceRef.current.broadcastEmergency("Sismo Local", `Vibración sísmica detectada (RMS: ${rms.toFixed(2)})`);
                setTimeout(() => setEarthquakeAlert(false), 5000);
             }
           }
         });
 
         // Iniciar Micrófono con TensorFlow.js
-        const analyzer = new AudioAnalyzer(() => { setAudioAlert(true); setTimeout(() => setAudioAlert(false), 5000); });
+        const analyzer = new AudioAnalyzer((reason?: string) => {
+           setAudioAlert(true);
+           triggerNativeNotification("¡ALERTA DE AUDIO!", reason || "Anomalía acústica detectada.");
+           setTimeout(() => setAudioAlert(false), 5000);
+        });
 
         const audioStarted = await analyzer.startListening();
         if (audioStarted) {
