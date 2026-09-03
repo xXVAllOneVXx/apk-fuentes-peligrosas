@@ -11,6 +11,10 @@ export class AudioAnalyzer {
   private baselineHighFreqEnergy = 0;
   private baselineCount = 0;
 
+  // Evitar falsos positivos de la voz (Geta) o ruidos instantáneos
+  private lowFreqSpikeFrames = 0;
+  private highFreqSpikeFrames = 0;
+
   // Debounce para evitar alertas contiguas
   private lastAlertTime = 0;
 
@@ -98,18 +102,35 @@ export class AudioAnalyzer {
         const now = Date.now();
 
         // Umbrales para detección: un pico repentino de X veces la energía ambiental promedio
-        const LOW_FREQ_MULTIPLIER = 4.0; // Infrasonido / Ondas P acústicas
-        const HIGH_FREQ_MULTIPLIER = 4.0; // Picos de alta frecuencia
+        // Aumentamos a 8.0 para evitar la voz humana y requerimos que se mantenga por varios frames
+        const LOW_FREQ_MULTIPLIER = 8.0;
+        const HIGH_FREQ_MULTIPLIER = 8.0;
 
         // Evitar falsos positivos en entornos de silencio casi absoluto
-        const MIN_ENERGY = 0.005;
+        const MIN_ENERGY = 0.015;
 
         if (now - this.lastAlertTime > 10000) {
             if (lowFreqEnergy > this.baselineLowFreqEnergy * LOW_FREQ_MULTIPLIER && lowFreqEnergy > MIN_ENERGY) {
+                this.lowFreqSpikeFrames++;
+            } else {
+                this.lowFreqSpikeFrames = 0;
+            }
+
+            if (highFreqEnergy > this.baselineHighFreqEnergy * HIGH_FREQ_MULTIPLIER && highFreqEnergy > MIN_ENERGY) {
+                this.highFreqSpikeFrames++;
+            } else {
+                this.highFreqSpikeFrames = 0;
+            }
+
+            // Un sismo real o explosión dura más que un chasquido o un golpe con la boca.
+            // Exigimos que el pico anómalo se mantenga por al menos 15 frames (aprox 250ms)
+            if (this.lowFreqSpikeFrames > 15) {
                 this.lastAlertTime = now;
+                this.lowFreqSpikeFrames = 0;
                 this.onAlertCallback("Microsismo Acústico (Onda P Infrasonido)");
-            } else if (highFreqEnergy > this.baselineHighFreqEnergy * HIGH_FREQ_MULTIPLIER && highFreqEnergy > MIN_ENERGY) {
+            } else if (this.highFreqSpikeFrames > 15) {
                 this.lastAlertTime = now;
+                this.highFreqSpikeFrames = 0;
                 this.onAlertCallback("Alta Frecuencia Anómala");
             }
         }
