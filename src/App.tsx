@@ -353,11 +353,12 @@ function App() {
             if (now - lastNotificationTime.current > 10000) {
                 // MODO REPOSO ACTIVO (Ultra-sensible, Ondas P / Microsismos)
                 if (deviceRestingState.current) {
-                    // Firma Onda P: Muy baja energía, frecuencia sostenida entre 1Hz y 10Hz
-                    const MICRO_MIN_ENERGY = 0.15; // Muy sensible
-                    const MICRO_MAX_ENERGY = 1.0;  // Límite superior de Onda P
+                    // Firma Onda P: Muy baja energía (temblores ligeros en m/s²), frecuencia sostenida
+                    // Un sismo real puede registrar desde 0.02 m/s² hasta 0.5 m/s² para sentirse en un celular
+                    const MICRO_MIN_ENERGY = 0.02; // Sensibilidad extrema para sentir casi cualquier temblor
+                    const MICRO_MAX_ENERGY = 0.3;
 
-                    if (rms > MICRO_MIN_ENERGY && rms < MICRO_MAX_ENERGY && estimatedHz >= 1.0 && estimatedHz <= 10.0) {
+                    if (rms > MICRO_MIN_ENERGY && rms < MICRO_MAX_ENERGY && estimatedHz >= 1.0 && estimatedHz <= 12.0) {
                         lastNotificationTime.current = now;
                         setEarthquakeAlert(true);
                         triggerNativeNotification(
@@ -381,8 +382,8 @@ function App() {
                 }
                 // MODO MANIPULACIÓN (Descartar microsismos, solo detectar sismos mayores evidentes)
                 else {
-                    // Requerimos mucha más energía para confirmar sismo mientras el usuario mueve el móvil
-                    const HIGH_MIN_ENERGY = 2.5;
+                    // Requerimos más energía porque caminar o usar el celular genera entre 0.5 y 2.0 m/s²
+                    const HIGH_MIN_ENERGY = 0.6;
                     const HIGH_MAX_ENERGY = 15.0; // Evitar caídas bruscas
 
                     if (rms > HIGH_MIN_ENERGY && rms < HIGH_MAX_ENERGY && estimatedHz >= 0.5 && estimatedHz <= 8.0) {
