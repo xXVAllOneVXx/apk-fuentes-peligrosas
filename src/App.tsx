@@ -19,6 +19,7 @@ function App() {
   const [sensorsActive, setSensorsActive] = useState(false);
 
   const [motionData, setMotionData] = useState({ x: 0, y: 0, z: 0 });
+  const [isDeviceResting, setIsDeviceResting] = useState(false);
   const [earthquakeAlert, setEarthquakeAlert] = useState(false);
   const [audioAlert, setAudioAlert] = useState(false);
   const [meshAlert, setMeshAlert] = useState<string | null>(null);
@@ -254,6 +255,9 @@ function App() {
   }, [sensorsActive, userLocation]);
 
 
+  // Ref para manejar el estado de reposo de forma síncrona dentro de los listeners
+  const deviceRestingState = useRef(false);
+
   // Activar sensores
   useEffect(() => {
     
@@ -264,9 +268,50 @@ function App() {
       const lat = userLocation.coords.latitude;
       const lng = userLocation.coords.longitude;
 
-      // 1. Escuchar Acelerómetro (Sismos Locales)
+      // 0. Fusión de Sensores: Orientación y Reposo
+      let rotationBuffer: number[] = [];
+      let restingTimeStart = 0;
+
+      Motion.addListener('orientation', (event) => {
+         // Evaluamos la rotación (alpha, beta, gamma)
+         const alpha = event.alpha || 0;
+         const beta = event.beta || 0;
+         const gamma = event.gamma || 0;
+
+         const rotMagnitude = Math.sqrt(alpha*alpha + beta*beta + gamma*gamma);
+         rotationBuffer.push(rotMagnitude);
+         if (rotationBuffer.length > 20) rotationBuffer.shift(); // Historial de ~medio segundo
+
+         if (rotationBuffer.length === 20) {
+             let isCurrentlyMoving = false;
+             // Si el dispositivo cambia su rotación significativamente, está siendo manipulado
+             for (let i = 1; i < rotationBuffer.length; i++) {
+                 if (Math.abs(rotationBuffer[i] - rotationBuffer[i-1]) > 1.5) { // Tolerancia estricta a la manipulación
+                     isCurrentlyMoving = true;
+                     break;
+                 }
+             }
+
+             if (isCurrentlyMoving) {
+                 restingTimeStart = 0;
+                 if (deviceRestingState.current) {
+                     deviceRestingState.current = false;
+                     setIsDeviceResting(false);
+                 }
+             } else {
+                 if (restingTimeStart === 0) restingTimeStart = Date.now();
+                 // Si ha estado quieto por más de 5 segundos, activar Modo Reposo
+                 if (Date.now() - restingTimeStart > 5000 && !deviceRestingState.current) {
+                     deviceRestingState.current = true;
+                     setIsDeviceResting(true);
+                 }
+             }
+         }
+      });
+
+      // 1. Escuchar Acelerómetro (Fusión de Sensores: Microsismos P-Waves)
       let bgAccelBuffer: number[] = [];
-      const BUFFER_SIZE = 64; // Potencia de 2 para análisis más fácil
+      const BUFFER_SIZE = 128; // Ventana más grande para capturar mejor las frecuencias (128 muestras)
 
       Motion.addListener('accel', (event) => {
         const x = event.acceleration.x || 0;
@@ -279,10 +324,11 @@ function App() {
         if (bgAccelBuffer.length > BUFFER_SIZE) bgAccelBuffer.shift();
 
         if (bgAccelBuffer.length === BUFFER_SIZE) {
-            // Aplicar un filtro pasa-bajos simple (Moving Average)
+            // Aplicar Filtro de Ventana Hanning para suavizar y evitar falsos positivos
             const smoothed: number[] = [];
-            for (let i = 2; i < BUFFER_SIZE - 2; i++) {
-               smoothed.push((bgAccelBuffer[i-2] + bgAccelBuffer[i-1] + bgAccelBuffer[i] + bgAccelBuffer[i+1] + bgAccelBuffer[i+2]) / 5);
+            for (let i = 0; i < BUFFER_SIZE; i++) {
+               const multiplier = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (BUFFER_SIZE - 1)));
+               smoothed.push(bgAccelBuffer[i] * multiplier);
             }
 
             // Calcular energía (RMS) de la señal filtrada
@@ -290,7 +336,7 @@ function App() {
             smoothed.forEach(v => sumEnergy += v*v);
             const rms = Math.sqrt(sumEnergy / smoothed.length);
 
-            // Calcular cruces por cero de la media para estimar frecuencia (Zero-Crossing)
+            // Calcular cruces por cero (Zero-Crossing) de la media para estimar frecuencia (Hz)
             let mean = smoothed.reduce((a, b) => a + b, 0) / smoothed.length;
             let zeroCrossings = 0;
             for (let i = 1; i < smoothed.length; i++) {
@@ -299,25 +345,57 @@ function App() {
                 }
             }
 
-            // Frecuencia estimada (asumiendo ~50 muestras por segundo)
+            // Frecuencia estimada (asumiendo ~50-60 muestras por segundo típicas en Capacitor)
             const durationSec = smoothed.length / 50;
             const estimatedHz = (zeroCrossings / 2) / durationSec;
 
-            // Sismos reales: Energía significativa (pero no extremo como un golpe)
-            // y baja frecuencia (típicamente entre 0.5Hz y 10Hz)
-            const MIN_ENERGY = 1.0;
-            const MAX_ENERGY = 15.0; // Descartar golpes fuertes/caídas
-
             const now = Date.now();
-            if (rms > MIN_ENERGY && rms < MAX_ENERGY && estimatedHz >= 0.5 && estimatedHz <= 15.0 && (now - lastNotificationTime.current > 10000)) {
-                lastNotificationTime.current = now;
-                setEarthquakeAlert(true);
-                triggerNativeNotification(
-                  "¡ALERTA DE SISMO (Fondo)!",
-                  `Movimiento sísmico detectado. (Energía: ${rms.toFixed(2)}, Freq: ${estimatedHz.toFixed(1)}Hz)`
-                );
-                HostingerService.reportEvent('sismo', lat, lng);
-                setTimeout(() => setEarthquakeAlert(false), 5000);
+            if (now - lastNotificationTime.current > 10000) {
+                // MODO REPOSO ACTIVO (Ultra-sensible, Ondas P / Microsismos)
+                if (deviceRestingState.current) {
+                    // Firma Onda P: Muy baja energía, frecuencia sostenida entre 1Hz y 10Hz
+                    const MICRO_MIN_ENERGY = 0.15; // Muy sensible
+                    const MICRO_MAX_ENERGY = 1.0;  // Límite superior de Onda P
+
+                    if (rms > MICRO_MIN_ENERGY && rms < MICRO_MAX_ENERGY && estimatedHz >= 1.0 && estimatedHz <= 10.0) {
+                        lastNotificationTime.current = now;
+                        setEarthquakeAlert(true);
+                        triggerNativeNotification(
+                          "¡PRECAUCIÓN: MICROSISMO (Onda P)!",
+                          `Posible sismo mayor en camino. Dispositivo detectó microsismo local.`
+                        );
+                        HostingerService.reportEvent('sismo', lat, lng);
+                        setTimeout(() => setEarthquakeAlert(false), 8000);
+                    }
+                    // Firma Sismo Mayor (Ondas S) en Reposo
+                    else if (rms >= MICRO_MAX_ENERGY && rms < 20.0 && estimatedHz >= 0.5 && estimatedHz <= 15.0) {
+                        lastNotificationTime.current = now;
+                        setEarthquakeAlert(true);
+                        triggerNativeNotification(
+                          "¡ALERTA DE SISMO FUERTE!",
+                          `¡Ponte a salvo! Sismo destructivo en progreso.`
+                        );
+                        HostingerService.reportEvent('sismo', lat, lng);
+                        setTimeout(() => setEarthquakeAlert(false), 8000);
+                    }
+                }
+                // MODO MANIPULACIÓN (Descartar microsismos, solo detectar sismos mayores evidentes)
+                else {
+                    // Requerimos mucha más energía para confirmar sismo mientras el usuario mueve el móvil
+                    const HIGH_MIN_ENERGY = 2.5;
+                    const HIGH_MAX_ENERGY = 15.0; // Evitar caídas bruscas
+
+                    if (rms > HIGH_MIN_ENERGY && rms < HIGH_MAX_ENERGY && estimatedHz >= 0.5 && estimatedHz <= 8.0) {
+                        lastNotificationTime.current = now;
+                        setEarthquakeAlert(true);
+                        triggerNativeNotification(
+                          "¡ALERTA DE SISMO (Movimiento)!",
+                          `Sismo detectado mientras usas el móvil.`
+                        );
+                        HostingerService.reportEvent('sismo', lat, lng);
+                        setTimeout(() => setEarthquakeAlert(false), 8000);
+                    }
+                }
             }
         }
       });
@@ -369,10 +447,12 @@ function App() {
 
   const toggleSensors = async () => {
     if (sensorsActive) {
-      // Apagar Acelerómetro
+      // Apagar Sensores
       await Motion.removeAllListeners();
       setMotionData({ x: 0, y: 0, z: 0 });
       setEarthquakeAlert(false);
+      setIsDeviceResting(false);
+      deviceRestingState.current = false;
 
       // Apagar Micrófono
       if (audioAnalyzerRef.current) {
@@ -532,6 +612,11 @@ function App() {
         <p style={{ marginTop: '10px', fontSize: '0.9rem', color: isOnline ? '#34c759' : '#ffcc00' }}>
           {isOnline ? '🟢 Conectado a la red' : '🟡 Modo Offline (Usando red local/Bluetooth)'}
         </p>
+        {sensorsActive && isDeviceResting && (
+          <p style={{ marginTop: '10px', fontSize: '0.85rem', color: '#0a84ff', fontWeight: 'bold' }}>
+            📱 MODO REPOSO ACTIVO: Sensores configurados para detección de Microsismos (Ondas P).
+          </p>
+        )}
       </div>
 
       <h3 style={{ width: '100%', textAlign: 'left', marginBottom: '10px' }}>Sensores Locales</h3>
