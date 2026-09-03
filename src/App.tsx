@@ -210,6 +210,17 @@ function App() {
       fetchAndProcessAlerts(userLocation || initialLocation);
     }, 60000);
 
+    // Iniciar WebSocket con EMSC para sismos al instante
+    GlobalAlertsService.startRealtimeEMSC((newAlert) => {
+      // Cuando EMSC empuja una alerta en tiempo real, procesarla inmediatamente sin esperar 60s
+      setGlobalAlerts(prev => [newAlert, ...prev]);
+
+      const loc = userLocation || initialLocation;
+      if (loc) {
+        checkGlobalAlertsProximity([newAlert], loc);
+      }
+    });
+
     // PWA Install Prompt handling
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
@@ -328,21 +339,24 @@ function App() {
       currentAudioAnalyzer.startListening().catch(e => console.error("Microphone err:", e));
       audioAnalyzerRef.current = currentAudioAnalyzer;
 
-      // 3. Polling a Hostinger ("Red Mesh" comunitaria en la nube)
+      // 3. Polling a Hostinger ("Red Mesh" comunitaria en la nube) ultrarrápido
       pollInterval = setInterval(async () => {
           const alerts = await HostingerService.pollAlerts(lat, lng);
           if (alerts.length > 0) {
               const latestAlert = alerts[0];
-              setMeshAlert(`¡ALERTA COMUNITARIA! ${latestAlert.alert_type.toUpperCase()} detectado a ${parseFloat(latestAlert.distance).toFixed(1)} km.`);
-              LocalNotifications.schedule({
-                  notifications: [{
-                      title: "¡ALERTA CERCANA!",
-                      body: `Se ha detectado un posible ${latestAlert.alert_type} cerca de ti.`,
-                      id: 1
-                  }]
-              });
+
+              // Evitar spam si es la misma alerta
+              if (!notifiedAlertIds.current.has(latestAlert.id || latestAlert.alert_type)) {
+                  notifiedAlertIds.current.add(latestAlert.id || latestAlert.alert_type);
+
+                  setMeshAlert(`¡ALERTA TEMPRANA COMUNITARIA! ${latestAlert.alert_type.toUpperCase()} detectado a ${parseFloat(latestAlert.distance).toFixed(1)} km.`);
+                  triggerNativeNotification(
+                     "¡ALERTA TEMPRANA CERCANA!",
+                     `¡Prepárate! La red comunitaria ha detectado un posible ${latestAlert.alert_type} a ${parseFloat(latestAlert.distance).toFixed(1)} km que podría llegar en segundos.`
+                  );
+              }
           }
-      }, 15000); // Poll cada 15 segundos
+      }, 1000); // Poll cada 1 segundo (Velocidad de la luz para la red mesh)
     }
 
     return () => {

@@ -17,6 +17,72 @@ export class GlobalAlertsService {
   // GDACS API (Global Disaster Alert and Coordination System) via RSS Feed
   private static readonly GDACS_RSS_URL = 'https://www.gdacs.org/xml/rss.xml';
 
+  // Almacenar alertas en tiempo real provenientes del WebSocket de EMSC
+  private static emscAlerts: GlobalAlert[] = [];
+  private static ws: WebSocket | null = null;
+
+  /**
+   * Inicia la conexión WebSocket en tiempo real con EMSC para sismos al instante
+   */
+  static startRealtimeEMSC(onNewAlertCallback: (alert: GlobalAlert) => void) {
+    if (this.ws) return; // Ya conectado
+
+    try {
+      // EMSC WebSocket Server for real-time earthquakes
+      this.ws = new WebSocket('wss://www.seismicportal.eu/standing_order/websocket');
+
+      this.ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.action === 'create') {
+            const data = message.data;
+            const mag = data.properties.mag;
+
+            let severity: GlobalAlert['severity'] = 'micro';
+            if (mag >= 6.0) severity = 'critical';
+            else if (mag >= 5.0) severity = 'high';
+            else if (mag >= 4.0) severity = 'medium';
+            else if (mag >= 3.0) severity = 'low';
+
+            const newAlert: GlobalAlert = {
+              id: data.id,
+              title: `Sismo EMSC - ${data.properties.region || 'Región Desconocida'}`,
+              timestamp: new Date(data.properties.time).getTime(),
+              type: 'earthquake',
+              severity: severity,
+              details: `Magnitud: ${mag}. Autoridad: ${data.properties.auth}.`,
+              coordinates: {
+                 lat: data.geometry.coordinates[1],
+                 lng: data.geometry.coordinates[0]
+              }
+            };
+
+            // Mantener buffer de los últimos 50
+            this.emscAlerts.unshift(newAlert);
+            if (this.emscAlerts.length > 50) this.emscAlerts.pop();
+
+            onNewAlertCallback(newAlert);
+          }
+        } catch (e) {
+          console.error("Error parseando WebSocket EMSC:", e);
+        }
+      };
+
+      this.ws.onerror = (error) => {
+        console.error("WebSocket EMSC Error:", error);
+      };
+
+      this.ws.onclose = () => {
+         this.ws = null;
+         // Intentar reconectar en 30s
+         setTimeout(() => this.startRealtimeEMSC(onNewAlertCallback), 30000);
+      };
+
+    } catch (e) {
+       console.error("No se pudo iniciar el WebSocket", e);
+    }
+  }
+
   /**
    * Fetches the latest global alerts from public APIs
    */
@@ -36,6 +102,12 @@ export class GlobalAlertsService {
       if (gdacsAlerts.status === 'fulfilled') {
         combined = [...combined, ...gdacsAlerts.value];
       }
+
+      // Añadir también las alertas en vivo del EMSC que tengamos cacheadas
+      combined = [...combined, ...this.emscAlerts];
+
+      // Eliminar duplicados si USGS y EMSC reportan el mismo (búsqueda por proximidad y tiempo)
+      // Por simplicidad, retornamos todos y ordenamos (App.tsx filtra por ID)
 
       // Sort by timestamp descending
       return combined.sort((a, b) => b.timestamp - a.timestamp);
