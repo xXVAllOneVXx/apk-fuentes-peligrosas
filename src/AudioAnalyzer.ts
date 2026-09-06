@@ -68,6 +68,9 @@ export class AudioAnalyzer {
     let highFreqEnergy = 0;
     let highFreqBins = 0;
 
+    let midFreqEnergy = 0; // Banda humana/ruidos comunes
+    let midFreqBins = 0;
+
     for (let i = 0; i < bufferLength; i++) {
         const freq = i * hzPerBin;
         // Convertir dB a magnitud lineal (getFloatFrequencyData retorna típicamente entre -100 y 0)
@@ -84,10 +87,16 @@ export class AudioAnalyzer {
             highFreqEnergy += magnitude;
             highFreqBins++;
         }
+        // Frecuencias medias (Voz humana, golpes, puertas, gritos: 300Hz - 3000Hz)
+        else if (freq >= 300 && freq <= 3000) {
+            midFreqEnergy += magnitude;
+            midFreqBins++;
+        }
     }
 
     if (lowFreqBins > 0) lowFreqEnergy /= lowFreqBins;
     if (highFreqBins > 0) highFreqEnergy /= highFreqBins;
+    if (midFreqBins > 0) midFreqEnergy /= midFreqBins;
 
     // Calcular la línea base durante los primeros 100 frames (~1.5 segundos)
     if (this.baselineCount < 100) {
@@ -102,33 +111,39 @@ export class AudioAnalyzer {
         const now = Date.now();
 
         // Umbrales para detección: un pico repentino de X veces la energía ambiental promedio
-        // Aumentamos a 8.0 para evitar la voz humana y requerimos que se mantenga por varios frames
-        const LOW_FREQ_MULTIPLIER = 8.0;
-        const HIGH_FREQ_MULTIPLIER = 8.0;
+        const LOW_FREQ_MULTIPLIER = 12.0;
+        const HIGH_FREQ_MULTIPLIER = 12.0;
 
         // Evitar falsos positivos en entornos de silencio casi absoluto
-        const MIN_ENERGY = 0.015;
+        const MIN_ENERGY = 0.02;
 
         if (now - this.lastAlertTime > 10000) {
-            if (lowFreqEnergy > this.baselineLowFreqEnergy * LOW_FREQ_MULTIPLIER && lowFreqEnergy > MIN_ENERGY) {
+            // RECHAZO DE BANDA ANCHA:
+            // Los ruidos fuertes (como gritos, la boca, golpes) generan energía en TODAS las frecuencias.
+            // Si la energía media (midFreqEnergy) es alta, significa que es un ruido humano fuerte.
+            // Solo aceptamos la anomalía si la energía de Infrasonido es matemáticamente DOMINANTE (por ejemplo, al menos 3 veces mayor a la voz humana).
+            const isMidFreqInterference = midFreqEnergy > (lowFreqEnergy / 3);
+
+            if (!isMidFreqInterference && lowFreqEnergy > this.baselineLowFreqEnergy * LOW_FREQ_MULTIPLIER && lowFreqEnergy > MIN_ENERGY) {
                 this.lowFreqSpikeFrames++;
             } else {
                 this.lowFreqSpikeFrames = 0;
             }
 
-            if (highFreqEnergy > this.baselineHighFreqEnergy * HIGH_FREQ_MULTIPLIER && highFreqEnergy > MIN_ENERGY) {
+            const isMidFreqInterferenceHigh = midFreqEnergy > (highFreqEnergy / 2);
+            if (!isMidFreqInterferenceHigh && highFreqEnergy > this.baselineHighFreqEnergy * HIGH_FREQ_MULTIPLIER && highFreqEnergy > MIN_ENERGY) {
                 this.highFreqSpikeFrames++;
             } else {
                 this.highFreqSpikeFrames = 0;
             }
 
-            // Un sismo real o explosión dura más que un chasquido o un golpe con la boca.
-            // Exigimos que el pico anómalo se mantenga por al menos 15 frames (aprox 250ms)
-            if (this.lowFreqSpikeFrames > 15) {
+            // Un sismo real o anomalía pura dura más que un chasquido
+            // Exigimos que el pico anómalo se mantenga por al menos 30 frames (aprox 500ms sostenidos)
+            if (this.lowFreqSpikeFrames > 30) {
                 this.lastAlertTime = now;
                 this.lowFreqSpikeFrames = 0;
                 this.onAlertCallback("Microsismo Acústico (Onda P Infrasonido)");
-            } else if (this.highFreqSpikeFrames > 15) {
+            } else if (this.highFreqSpikeFrames > 30) {
                 this.lastAlertTime = now;
                 this.highFreqSpikeFrames = 0;
                 this.onAlertCallback("Alta Frecuencia Anómala");
